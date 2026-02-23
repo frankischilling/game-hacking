@@ -91,38 +91,33 @@ static uintptr_t ExtractOffset(uintptr_t match, int ptrOff, uintptr_t modBase) {
     return absAddr - modBase;
 }
 
-// check extracted offset is sane: inside module, readable, close to fallback
-static bool ValidateOffset(uintptr_t base, uintptr_t offset, size_t modSize, uintptr_t fallback) {
-    if (offset == 0 || offset >= modSize) return false;
-    uintptr_t drift = (offset > fallback) ? (offset - fallback) : (fallback - offset);
-    if (drift > 0x2000) return false;
-    __try {
-        volatile uintptr_t probe = *reinterpret_cast<uintptr_t*>(base + offset);
-        (void)probe;
-        return true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
+// find first 4-byte occurrence of absAddr in [base, base+size)
+static uintptr_t FindXRef(uintptr_t base, size_t size, uintptr_t absAddr) {
+    const BYTE* mem = reinterpret_cast<const BYTE*>(base);
+    for (size_t i = 0; i + 4 <= size; i++) {
+        if (*reinterpret_cast<const uintptr_t*>(mem + i) == absAddr)
+            return base + i;
     }
+    return 0;
 }
 
+struct SigPattern { const char* pat; int ptrOff; };
+
 struct SigEntry {
-    const char* name;
-    const char* pattern;
-    int         ptrOff;     // where in the match the 4-byte addr sits
-    uintptr_t   fallback;   // hardcoded offset if scan fails
+    const char*  name;
+    SigPattern   sigs[5];
+    int          numSigs;
+    uintptr_t    fallback;
+    uintptr_t*   target;
 };
 
-// offsets
-// scanned (global pointers, may shift between builds)
+// offsets (resolved at runtime)
 static uintptr_t offLocalPlayer = 0;
 static uintptr_t offEntityList  = 0;
 static uintptr_t offEntityCount = 0;
 static uintptr_t offViewMatrix  = 0;
 
-// player struct offsets (from ReClass)
-constexpr DWORD offHeadX  = 0x04;
-constexpr DWORD offHeadY  = 0x08;
-constexpr DWORD offHeadZ  = 0x0C;
+// player struct offsets
 constexpr DWORD offPosX   = 0x28;
 constexpr DWORD offPosY   = 0x2C;
 constexpr DWORD offPosZ   = 0x30;
@@ -132,7 +127,6 @@ constexpr DWORD offHealth = 0xEC;
 constexpr DWORD offArmor  = 0xF0;
 constexpr DWORD offName   = 0x205;
 constexpr DWORD offTeam   = 0x30C;
-constexpr DWORD offDead   = 0x318;
 
 constexpr DWORD offAmmoPistol  = 0x12C;
 constexpr DWORD offAmmoTMP     = 0x130;
@@ -142,25 +136,42 @@ constexpr DWORD offAmmoSniper  = 0x13C;
 constexpr DWORD offAmmoRifle   = 0x140;
 constexpr DWORD offAmmoGrenade = 0x144;
 
-constexpr float AIM_FOV      = 30.0f;   // only lock onto targets within this fov (degrees)
-constexpr float AIM_SMOOTH   = 5.0f;    // 1.0 = instant snap, higher = smoother
+constexpr float AIM_FOV      = 30.0f;
+constexpr float AIM_SMOOTH   = 5.0f;
 constexpr float PI           = 3.14159265f;
 constexpr float DEG2RAD      = PI / 180.0f;
 constexpr float RAD2DEG      = 180.0f / PI;
 
-// update these sigs if targeting a different AC build
-// pattern: surrounding instruction bytes, ?? = wildcard over the address operand
-// ptrOff: byte index in the match where the 4-byte absolute address starts
+// multiple patterns per target, tried in order
+// pattern = instruction bytes with ?? for the 4-byte address operand
+// ptrOff  = byte offset within the match where the address sits
 static SigEntry g_sigs[] = {
-    //                     name           pattern                              ptrOff  fallback
-    { "localPlayer", "8B 0D ?? ?? ?? ?? 56 57 8B 7C 24",                  2,  0x18AC00 },
-    { "entityList",  "A1 ?? ?? ?? ?? 8B 54 24 ?? 8B 4C 24",              1,  0x18AC04 },
-    { "entityCount", "8B 0D ?? ?? ?? ?? 89 44 24 ?? 85 C9",              2,  0x18AC0C },
-    { "viewMatrix",  "A1 ?? ?? ?? ?? C7 44 24 ?? 00 00 00 00 89 44 24", 1,  0x17DFD0 },
-};
+    { "localPlayer", {
+        { "8B 0D ?? ?? ?? ?? 8B 01 50",             2 },
+        { "8B 0D ?? ?? ?? ?? 85 C9 74",             2 },
+        { "8B 0D ?? ?? ?? ?? 56 57 8B 7C 24",       2 },
+        { "A1 ?? ?? ?? ?? 85 C0 74",                1 },
+    }, 4, 0x18AC00, &offLocalPlayer },
 
-static uintptr_t* g_sigTargets[] = {
-    &offLocalPlayer, &offEntityList, &offEntityCount, &offViewMatrix
+    { "entityList", {
+        { "A1 ?? ?? ?? ?? 8B 04 B8",                1 },
+        { "A1 ?? ?? ?? ?? 8B 0C B0",                1 },
+        { "A1 ?? ?? ?? ?? 83 C4 ?? 8B 04 B8",       1 },
+        { "8B 0D ?? ?? ?? ?? 8B 14 B1",             2 },
+    }, 4, 0x18AC04, &offEntityList },
+
+    { "entityCount", {
+        { "3B 05 ?? ?? ?? ?? 7C",                   2 },
+        { "A1 ?? ?? ?? ?? 48 85 C0",                1 },
+        { "8B 0D ?? ?? ?? ?? 49",                   2 },
+        { "8B 0D ?? ?? ?? ?? 89 44 24 ?? 85 C9",    2 },
+    }, 4, 0x18AC0C, &offEntityCount },
+
+    { "viewMatrix", {
+        { "A1 ?? ?? ?? ?? C7 44 24 ?? 00 00 00 00 89 44 24", 1 },
+        { "A1 ?? ?? ?? ?? 89 44 24 ?? D9",                   1 },
+        { "68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4",             1 },
+    }, 3, 0x17DFD0, &offViewMatrix },
 };
 
 static void ResolveOffsets(uintptr_t base) {
@@ -169,26 +180,54 @@ static void ResolveOffsets(uintptr_t base) {
 
     for (int i = 0; i < _countof(g_sigs); i++) {
         auto& s = g_sigs[i];
-        uintptr_t match = 0;
-        if (modSize > 0)
-            match = FindPattern(base, modSize, s.pattern);
+        bool resolved = false;
 
-        bool usedScan = false;
-        if (match) {
-            uintptr_t candidate = ExtractOffset(match, s.ptrOff, base);
-            if (ValidateOffset(base, candidate, modSize, s.fallback)) {
-                *g_sigTargets[i] = candidate;
-                usedScan = true;
-                Log("%-14s scan hit @ +0x%X -> offset 0x%X\n",
-                    s.name, (unsigned)(match - base), (unsigned)candidate);
-            } else {
-                Log("%-14s scan hit @ +0x%X -> 0x%X INVALID, rejected\n",
-                    s.name, (unsigned)(match - base), (unsigned)candidate);
+        // method 1: xref scan — find any instruction that contains base+fallback as an operand
+        // most reliable: confirms the exact address exists in code
+        if (modSize > 0) {
+            uintptr_t ref = FindXRef(base, modSize, base + s.fallback);
+            if (ref) {
+                *s.target = s.fallback;
+                resolved = true;
+                Log("%-14s xref @ +0x%X confirmed offset 0x%X\n",
+                    s.name, (unsigned)(ref - base), (unsigned)s.fallback);
             }
         }
-        if (!usedScan) {
-            *g_sigTargets[i] = s.fallback;
-            Log("%-14s using fallback 0x%X\n", s.name, (unsigned)s.fallback);
+
+        // method 2: pattern scan (for different builds where fallback address shifted)
+        // drift-checked against fallback to reject false positives
+        for (int p = 0; p < s.numSigs && !resolved; p++) {
+            uintptr_t match = (modSize > 0) ? FindPattern(base, modSize, s.sigs[p].pat) : 0;
+            if (!match) continue;
+
+            uintptr_t candidate = ExtractOffset(match, s.sigs[p].ptrOff, base);
+            if (candidate == 0 || candidate >= modSize) continue;
+
+            uintptr_t drift = (candidate > s.fallback)
+                ? (candidate - s.fallback) : (s.fallback - candidate);
+            if (drift > 0x3000) {
+                Log("%-14s sig[%d] +0x%X -> 0x%X (drift 0x%X, skip)\n",
+                    s.name, p, (unsigned)(match - base), (unsigned)candidate, (unsigned)drift);
+                continue;
+            }
+
+            __try {
+                volatile uintptr_t probe = *reinterpret_cast<uintptr_t*>(base + candidate);
+                (void)probe;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                continue;
+            }
+
+            *s.target = candidate;
+            resolved = true;
+            Log("%-14s sig[%d] +0x%X -> offset 0x%X\n",
+                s.name, p, (unsigned)(match - base), (unsigned)candidate);
+        }
+
+        // method 3: hardcoded fallback
+        if (!resolved) {
+            *s.target = s.fallback;
+            Log("%-14s fallback 0x%X\n", s.name, (unsigned)s.fallback);
         }
     }
 }
