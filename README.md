@@ -11,6 +11,8 @@ A collection of small Windows-based memory-editing demos intended for learning h
 | `3/cube3` | cube3 | Unlimited ammo patcher — NOPs a 2-byte instruction |
 | `4/cube4/` | cube4 | Trainer: read position/health, press F1 to set health |
 | `5/cube5/` | cube5 | ESP overlay: DirectX 9 boxes + name labels over players |
+| `6/cube6/` | cube6 | DLL injector: inject DLLs into processes by PID, name, or window title |
+| `7/cube7/` | cube7 | AC DLL: ESP (boxes, health, names) + infinite ammo toggle (F2) |
 
 ## Conventions
 
