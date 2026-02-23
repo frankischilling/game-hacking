@@ -1,13 +1,13 @@
-# cube7 — Assault Cube DLL (ESP + Infinite Ammo)
+# cube7 - Assault Cube DLL (ESP + Infinite Ammo)
 
 DLL that injects into Assault Cube v1.3.0.2. Renders an ESP overlay with DirectX 9 and provides an infinite ammo toggle.
 
 ## Features
 
-- **ESP boxes** — White rectangles around visible players (enemies only in team modes)
-- **Health bar** — Color-coded bar (green/yellow/red) beside each box
-- **Names** — Player names above boxes
-- **Infinite ammo** — F2 toggles. When on, all weapon ammo stays at 999
+- **ESP boxes** - White rectangles around visible players (enemies only in team modes)
+- **Health bar** - Color-coded bar (green/yellow/red) beside each box
+- **Names** - Player names above boxes
+- **Infinite ammo** - F2 toggles. When on, all weapon ammo stays at 999
 
 ## Build
 
