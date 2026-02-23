@@ -1,0 +1,53 @@
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sdf
+*.cache
+*.VC.db
+*.VC.VC.opendb
+
+# Build output
+bin/
+obj/
+Debug/
+Release/
+x64/Debug/
+x64/Release/
+
+# Visual Studio project files
+*.vcxproj.user
+*.filters
+
+# Visual Studio Code
+.vscode/
+
+# Compiled binaries
+*.exe
+*.dll
+*.lib
+*.obj
+*.o
+*.pdb
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+build/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.cache
+
+# OS files
+Thumbs.db
+desktop.ini
+
+# Other
+*.swp
+*.DS_Store
