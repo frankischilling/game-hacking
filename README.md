@@ -7,8 +7,8 @@ A collection of small Windows-based memory-editing demos intended for learning h
 | Folder | Demo | Description |
 |--------|------|-------------|
 | `1/cube/assaultcube/` | Hello World | First demo: read/write ammo in the running AC process |
-| `2/` | cube2 | Pointer-chain hack that writes ammo via base + offsets |
-| `3/` | cube3 | Unlimited ammo patcher — NOPs a 2-byte instruction |
+| `2/cube2` | cube2 | Pointer-chain hack that writes ammo via base + offsets |
+| `3/cube3` | cube3 | Unlimited ammo patcher — NOPs a 2-byte instruction |
 | `4/cube4/` | cube4 | Trainer: read position/health, press F1 to set health |
 | `5/cube5/` | cube5 | ESP overlay: DirectX 9 boxes + name labels over players |
 
