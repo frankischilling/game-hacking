@@ -1,6 +1,6 @@
 // cube7 - ac_client.exe internal cheat
 // hooks wglSwapBuffers, renders esp + ammo hack + aimbot
-// f2 = ammo | f3 = esp | f4 = aimbot | end = unload
+// f2 = ammo | f3 = esp | f4 = aimbot | f5 = no recoil | end = unload
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -118,6 +118,9 @@ static uintptr_t offEntityCount = 0;
 static uintptr_t offViewMatrix  = 0;
 
 // player struct offsets
+constexpr DWORD offVelX   = 0x10;
+constexpr DWORD offVelY   = 0x14;
+constexpr DWORD offVelZ   = 0x18;
 constexpr DWORD offPosX   = 0x28;
 constexpr DWORD offPosY   = 0x2C;
 constexpr DWORD offPosZ   = 0x30;
@@ -245,12 +248,37 @@ static HMODULE   g_hModule    = NULL;
 static volatile bool g_espEnabled   = true;
 static volatile bool g_infiniteAmmo = false;
 static volatile bool g_aimbotOn     = false;
+static volatile bool g_noRecoil     = false;
 static volatile bool g_running      = true;
-static uintptr_t     g_aimTarget    = 0;       // entity ptr of current lock
-static float         g_aimTargetFov = 0;       // fov angle to current target
+static uintptr_t     g_aimTarget    = 0;
+static float         g_aimTargetFov = 0;
 static GLuint g_fontBase   = 0;
 static bool   g_fontReady  = false;
 static bool   g_teamGame   = false;
+static float  g_savedVel[3] = { 0, 0, 0 };
+
+// recoil patch: addss xmmN, [reg+38h] — encoding varies by build
+static uintptr_t g_recoilAddr = 0;
+static int       g_recoilLen  = 0;
+static BYTE      g_recoilOriginal[8] = { 0 };
+static bool      g_recoilSaved = false;
+
+static void PatchBytes(uintptr_t addr, const BYTE* patch, size_t len) {
+    DWORD oldProt;
+    VirtualProtect(reinterpret_cast<void*>(addr), len, PAGE_EXECUTE_READWRITE, &oldProt);
+    memcpy(reinterpret_cast<void*>(addr), patch, len);
+    VirtualProtect(reinterpret_cast<void*>(addr), len, oldProt, &oldProt);
+}
+
+static void SetNoRecoil(bool enable) {
+    if (!g_recoilAddr || !g_recoilLen) return;
+    if (!g_recoilSaved) {
+        memcpy(g_recoilOriginal, reinterpret_cast<void*>(g_recoilAddr), g_recoilLen);
+        g_recoilSaved = true;
+    }
+    static const BYTE nops[8] = { 0x90,0x90,0x90,0x90,0x90,0x90,0x90,0x90 };
+    PatchBytes(g_recoilAddr, enable ? nops : g_recoilOriginal, g_recoilLen);
+}
 
 struct Vec3 { float x, y, z; };
 
@@ -590,10 +618,11 @@ static void RenderHUD(int W, int H) {
         }
     }
 
-    sprintf_s(buf, "esp:%s  ammo:%s  aim:%s  [end=unload]",
+    sprintf_s(buf, "esp:%s  ammo:%s  aim:%s  norecoil:%s  [end=unload]",
               g_espEnabled   ? "on" : "off",
               g_infiniteAmmo ? "on" : "off",
-              g_aimbotOn     ? "on" : "off");
+              g_aimbotOn     ? "on" : "off",
+              g_noRecoil     ? "on" : "off");
     GLText(10, (float)H - 24, 0, 1, 0, buf);
 }
 
@@ -612,6 +641,11 @@ static BOOL WINAPI hkSwapBuffers(HDC hdc) {
         g_aimbotOn = !g_aimbotOn;
         Log("aimbot: %s\n", g_aimbotOn ? "on" : "off");
     }
+    if (GetAsyncKeyState(VK_F5) & 1) {
+        g_noRecoil = !g_noRecoil;
+        SetNoRecoil(g_noRecoil);
+        Log("no recoil: %s\n", g_noRecoil ? "on" : "off");
+    }
     if (GetAsyncKeyState(VK_END) & 1) {
         Log("unloading\n");
         g_running = false;
@@ -619,6 +653,23 @@ static BOOL WINAPI hkSwapBuffers(HDC hdc) {
 
     g_teamGame = IsTeamGame();
     RunAimbot();
+
+    // anti-pushback: save velocity when idle, restore when shooting
+    if (g_noRecoil) {
+        __try {
+            uintptr_t lp = Mem<uintptr_t>(moduleBase + offLocalPlayer);
+            if (lp) {
+                if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) {
+                    *reinterpret_cast<float*>(lp + offVelX) = g_savedVel[0];
+                    *reinterpret_cast<float*>(lp + offVelY) = g_savedVel[1];
+                } else {
+                    g_savedVel[0] = Mem<float>(lp + offVelX);
+                    g_savedVel[1] = Mem<float>(lp + offVelY);
+                    g_savedVel[2] = Mem<float>(lp + offVelZ);
+                }
+            }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    }
 
     glPushAttrib(GL_ALL_ATTRIB_BITS);
     glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
@@ -692,6 +743,7 @@ static bool InstallHooks() {
 
 static void RemoveHooks() {
     Log("removing hooks\n");
+    if (g_noRecoil) SetNoRecoil(false);
     if (g_fontReady && g_fontBase) {
         glDeleteLists(g_fontBase, 256);
         g_fontReady = false;
@@ -722,6 +774,53 @@ static DWORD WINAPI MainThread(LPVOID param) {
 
     ResolveOffsets(moduleBase);
 
+    // locate the recoil function by its unique load+multiply sequence:
+    //   movss xmmN, [reg+40h]   (F3 0F 10 ?? 40)  — load recoil intensity
+    //   mulss xmmN, [reg+44h]   (F3 0F 59 ?? 44)  — multiply by factor
+    // then scan forward within the function for:
+    //   movss [reg+38h], xmmN   (F3 0F 11 ?? 38)  — store recoil'd pitch
+    // NOPping the store prevents recoil from being written to pitch
+    size_t modSz = GetModuleSize(moduleBase);
+
+    // method 1: find the recoil function signature, then find the store
+    {
+        const char* funcSigs[] = {
+            "F3 0F 10 ?? 40 F3 0F 59 ?? 44",
+            "F3 0F 10 ?? 40 F3 0F 59 ?? 40",
+        };
+        for (int s = 0; s < 2 && !g_recoilAddr; s++) {
+            uintptr_t func = FindPattern(moduleBase, modSz, funcSigs[s]);
+            if (!func) continue;
+            Log("recoil func sig[%d] @ +0x%X\n", s, (unsigned)(func - moduleBase));
+
+            for (int off = 5; off < 80 && !g_recoilAddr; off++) {
+                BYTE* p = reinterpret_cast<BYTE*>(func + off);
+                if (p[0] == 0xF3 && p[1] == 0x0F && p[2] == 0x11 &&
+                    (p[3] & 0xC0) == 0x40 && (p[3] & 0x07) != 0x04 &&
+                    p[4] == 0x38) {
+                    g_recoilAddr = func + off;
+                    g_recoilLen = 5;
+                }
+            }
+        }
+    }
+
+    // method 2: try exact known encoding from the reference build
+    if (!g_recoilAddr) {
+        uintptr_t m = FindPattern(moduleBase, modSz, "F3 0F 11 56 38");
+        if (m) {
+            g_recoilAddr = m;
+            g_recoilLen = 5;
+            Log("recoil exact match @ +0x%X\n", (unsigned)(m - moduleBase));
+        }
+    }
+
+    if (g_recoilAddr)
+        Log("recoil store @ +0x%X (%d bytes)\n",
+            (unsigned)(g_recoilAddr - moduleBase), g_recoilLen);
+    else
+        Log("recoil store NOT found, F5 = pushback only\n");
+
     if (!InstallHooks()) {
         Log("hook install failed\n");
         MH_Uninitialize();
@@ -730,7 +829,7 @@ static DWORD WINAPI MainThread(LPVOID param) {
         return 1;
     }
 
-    Log("running  f2=ammo  f3=esp  f4=aim  end=unload\n");
+    Log("running  f2=ammo  f3=esp  f4=aim  f5=norecoil  end=unload\n");
 
     while (g_running) Sleep(100);
 

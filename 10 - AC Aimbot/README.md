@@ -4,8 +4,9 @@ Internal cheat DLL for Assault Cube. Hooks `wglSwapBuffers` (MinHook) to render 
 
 ## Features
 
-- **ESP** - boxes, health bars, player names; teammates shown in blue
-- **Aimbot** - closest enemy in FOV, smoothing, team filtering
+- **ESP** — boxes, health bars, player names; teammates shown in blue
+- **Aimbot** — closest enemy in FOV, smoothing, team filtering
+- **No recoil** — removes camera kick and pushback when shooting (F5)
 - **Infinite ammo** toggle
 - Pattern scanning for offsets (fallbacks for v1.3.0.2)
 - Debug console with hook/scan status
@@ -17,6 +18,7 @@ Internal cheat DLL for Assault Cube. Hooks `wglSwapBuffers` (MinHook) to render 
 | F2 | Toggle infinite ammo |
 | F3 | Toggle ESP |
 | F4 | Toggle aimbot |
+| F5 | Toggle no recoil |
 | END | Unload DLL |
 
 ## Build
